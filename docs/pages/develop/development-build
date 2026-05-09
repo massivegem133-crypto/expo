@@ -1,0 +1,213 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { StyleSheet, Text, View, PanResponder, Animated, Dimensions, StatusBar, TouchableOpacity } from 'react-native';
+import { Audio } from 'expo-av'; 
+
+const { width } = Dimensions.get('window');
+const GRID_SIZE = 8;
+const PADDING = 20;
+const GRID_WIDTH = width - (PADDING * 2);
+const CELL_SIZE = Math.floor(GRID_WIDTH / GRID_SIZE);
+
+const SHAPES = [
+  { id: 0, layout: [[1, 1], [1, 1]], color: '#FF007F' }, 
+  { id: 1, layout: [[1, 1, 1, 1]], color: '#00E5FF' },  
+  { id: 2, layout: [[0, 1, 0], [1, 1, 1]], color: '#7FFF00' }, 
+  { id: 3, layout: [[1, 1], [1, 0]], color: '#FFD700' }, 
+  { id: 4, layout: [[1, 1, 1]], color: '#00E5FF' },     
+];
+
+export default function App() {
+  const [gameState, setGameState] = useState('START'); 
+  const [grid, setGrid] = useState(Array(GRID_SIZE).fill(0).map(() => Array(GRID_SIZE).fill(0)));
+  const [score, setScore] = useState(0);
+  const [currentShapes, setCurrentShapes] = useState([0, 1, 2]);
+  const [gridLayout, setGridLayout] = useState({ x: 0, y: 0 });
+  const [timer, setTimer] = useState(60);
+  const [activeIdx, setActiveIdx] = useState(null);
+
+  const pans = [useRef(new Animated.ValueXY()).current, useRef(new Animated.ValueXY()).current, useRef(new Animated.ValueXY()).current];
+  const liftAnim = useRef(new Animated.Value(1)).current;
+  const touchOffset = useRef({ x: 0, y: 0 });
+
+  useEffect(() => {
+    let interval;
+    if (gameState === 'PLAYING' && timer > 0) {
+      interval = setInterval(() => setTimer(prev => Math.max(0, prev - 1)), 1000);
+    } else if (timer <= 0 && gameState === 'PLAYING') {
+      setGameState('TIMEOUT'); 
+    }
+    return () => clearInterval(interval);
+  }, [gameState, timer]);
+
+  async function playBlastSound() {
+    try {
+      const { sound } = await Audio.Sound.createAsync({ uri: 'https://www.soundjay.com/buttons/sounds/button-09a.mp3' });
+      await sound.playAsync();
+    } catch (e) { console.log("Missing Dependency: Click the 'Add dep' button!"); }
+  }
+
+  const canFit = (shape, r, c, currentGrid) => {
+    for (let ri = 0; ri < shape.layout.length; ri++) {
+      for (let ci = 0; ci < shape.layout[0].length; ci++) {
+        if (shape.layout[ri][ci] === 1) {
+          if (r + ri >= GRID_SIZE || c + ci >= GRID_SIZE || currentGrid[r + ri][c + ci] !== 0) return false;
+        }
+      }
+    }
+    return true;
+  };
+
+  const checkGameOver = (currentGrid, shapesInRack) => {
+    for (let shapeIdx of shapesInRack) {
+      const shape = SHAPES[shapeIdx];
+      for (let r = 0; r < GRID_SIZE; r++) {
+        for (let c = 0; c < GRID_SIZE; c++) {
+          if (canFit(shape, r, c, currentGrid)) return false; 
+        }
+      }
+    }
+    return true; 
+  };
+
+  const createPanResponder = (index) => PanResponder.create({
+    onStartShouldSetPanResponder: () => gameState === 'PLAYING',
+    onPanResponderGrant: (e) => {
+      setActiveIdx(index);
+      touchOffset.current = { x: e.nativeEvent.locationX, y: e.nativeEvent.locationY };
+      Animated.spring(liftAnim, { toValue: 1.2, useNativeDriver: false }).start();
+    },
+    onPanResponderMove: Animated.event([null, { dx: pans[index].x, dy: pans[index].y }], { useNativeDriver: false }),
+    onPanResponderRelease: (e, gesture) => {
+      setActiveIdx(null);
+      Animated.spring(liftAnim, { toValue: 1, useNativeDriver: false }).start();
+      const shape = SHAPES[currentShapes[index]];
+      const dropX = gesture.moveX - gridLayout.x - touchOffset.current.x;
+      const dropY = gesture.moveY - gridLayout.y - touchOffset.current.y;
+      const col = Math.round(dropX / CELL_SIZE);
+      const row = Math.round(dropY / CELL_SIZE);
+      if (placeShape(index, row, col)) { } else {
+        Animated.spring(pans[index], { toValue: { x: 0, y: 0 }, friction: 5, useNativeDriver: false }).start();
+      }
+    },
+  });
+
+  const placeShape = (shapeIdx, r, c) => {
+    const shape = SHAPES[currentShapes[shapeIdx]];
+    if (!canFit(shape, r, c, grid)) return false;
+
+    let newGrid = grid.map(row => [...row]);
+    shape.layout.forEach((row, ri) => {
+      row.forEach((cell, ci) => { if (cell === 1) newGrid[r + ri][c + ci] = shape.color; });
+    });
+    
+    let rowsToClear = [], colsToClear = [];
+    for (let i = 0; i < GRID_SIZE; i++) {
+      if (newGrid[i].every(cell => cell !== 0)) rowsToClear.push(i);
+      if (newGrid.every(row => row[i] !== 0)) colsToClear.push(i);
+    }
+
+    const totalCleared = rowsToClear.length + colsToClear.length;
+    rowsToClear.forEach(ri => newGrid[ri] = Array(GRID_SIZE).fill(0));
+    colsToClear.forEach(ci => newGrid.forEach(row => row[ci] = 0));
+
+    if (totalCleared > 0) {
+      playBlastSound();
+      setTimer(prev => prev + (totalCleared * 7)); 
+    }
+
+    setGrid(newGrid);
+    setScore(prev => prev + 10 + (totalCleared * 100));
+
+    let nextRack = [...currentShapes];
+    nextRack[shapeIdx] = Math.floor(Math.random() * SHAPES.length);
+    setCurrentShapes(nextRack);
+    pans[shapeIdx].setValue({ x: 0, y: 0 });
+
+    if (checkGameOver(newGrid, nextRack)) setGameState('GAMEOVER');
+    return true;
+  };
+
+  const restart = () => {
+    setGrid(Array(GRID_SIZE).fill(0).map(() => Array(GRID_SIZE).fill(0)));
+    setScore(0); setTimer(60); setGameState('PLAYING');
+    pans.forEach(p => p.setValue({ x: 0, y: 0 }));
+  };
+
+  if (gameState === 'START') {
+    return (
+      <View style={styles.menu}>
+        <Text style={styles.logoMain}>NEON GRID</Text>
+        <Text style={styles.logoSub}>BLAST</Text>
+        <TouchableOpacity style={styles.startBtn} onPress={restart}>
+          <Text style={styles.startBtnTxt}>START BLASTIN'</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      <StatusBar barStyle="light-content" />
+      <View style={styles.header}>
+        <Text style={styles.scoreText}>{score}</Text>
+        <View style={styles.timerPill}>
+          <Text style={[styles.timerText, { color: timer < 10 ? '#FF007F' : '#00E5FF' }]}>
+            {Math.floor(timer / 60)}:{(timer % 60).toString().padStart(2, '0')}
+          </Text>
+        </View>
+      </View>
+      <View style={styles.board} onLayout={(e) => e.target.measure((x, y, w, h, px, py) => setGridLayout({ x: px, y: py }))}>
+        {grid.map((row, rIdx) => (
+          <View key={rIdx} style={styles.row}>
+            {row.map((cell, cIdx) => <View key={cIdx} style={[styles.cell, { backgroundColor: cell === 0 ? '#1A1A1E' : cell }]} />)}
+          </View>
+        ))}
+        {(gameState === 'GAMEOVER' || gameState === 'TIMEOUT') && (
+          <View style={styles.overlay}>
+            <Text style={[styles.goText, { color: gameState === 'TIMEOUT' ? '#00E5FF' : '#FF007F' }]}>{gameState.replace('GAMEOVER', 'GAME OVER').replace('TIMEOUT', 'TIME OUT')}</Text>
+            <Text style={styles.finalScore}>SCORE: {score}</Text>
+            <TouchableOpacity style={[styles.retryBtn, { backgroundColor: gameState === 'TIMEOUT' ? '#00E5FF' : '#FF007F' }]} onPress={restart}>
+              <Text style={[styles.retryTxt, { color: gameState === 'TIMEOUT' ? '#000' : '#FFF' }]}>RETRY</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+      <View style={styles.rack}>
+        {currentShapes.map((id, index) => (
+          <Animated.View key={index} {...createPanResponder(index).panHandlers} 
+            style={[styles.dragHandle, pans[index].getLayout(), { zIndex: activeIdx === index ? 99 : 1, transform: [{ scale: activeIdx === index ? liftAnim : 1 }] }]}>
+            {SHAPES[id].layout.map((row, ri) => (
+              <View key={ri} style={styles.row}>
+                {row.map((cell, ci) => <View key={ci} style={[styles.miniCell, { backgroundColor: cell === 1 ? SHAPES[id].color : 'transparent' }]} />)}
+              </View>
+            ))}
+          </Animated.View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#050505', alignItems: 'center' },
+  menu: { flex: 1, backgroundColor: '#050505', justifyContent: 'center', alignItems: 'center' },
+  logoMain: { color: '#FFD700', fontSize: 44, fontWeight: '900' },
+  logoSub: { color: '#FFF', fontSize: 60, fontWeight: '900', marginTop: -15 },
+  startBtn: { marginTop: 50, backgroundColor: '#00E5FF', paddingVertical: 20, paddingHorizontal: 60, borderRadius: 50 },
+  startBtnTxt: { color: '#000', fontSize: 22, fontWeight: 'bold' },
+  header: { marginTop: 60, alignItems: 'center' },
+  scoreText: { color: '#FFF', fontSize: 80, fontWeight: '900' },
+  timerPill: { backgroundColor: '#111', paddingHorizontal: 20, paddingVertical: 5, borderRadius: 15 },
+  timerText: { fontSize: 32, fontWeight: 'bold', fontFamily: 'monospace' },
+  board: { marginTop: 20, padding: 6, backgroundColor: '#0D0D0F', borderRadius: 15 },
+  row: { flexDirection: 'row' },
+  cell: { width: CELL_SIZE - 2, height: CELL_SIZE - 2, margin: 1, borderRadius: 5 },
+  overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.92)', justifyContent: 'center', alignItems: 'center', borderRadius: 15, zIndex: 100 },
+  goText: { fontSize: 48, fontWeight: '900', textAlign: 'center' },
+  finalScore: { color: '#FFF', fontSize: 24, marginVertical: 10 },
+  retryBtn: { paddingVertical: 15, paddingHorizontal: 50, borderRadius: 30, marginTop: 20 },
+  retryTxt: { fontSize: 20, fontWeight: 'bold' },
+  rack: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 40, width: '90%', height: 140, backgroundColor: '#0D0D0F', borderRadius: 30, alignItems: 'center' },
+  dragHandle: { padding: 10 },
+  miniCell: { width: CELL_SIZE / 2.3, height: CELL_SIZE / 2.3, margin: 1, borderRadius: 3 }
+});
