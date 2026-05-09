@@ -1,98 +1,222 @@
----
-title: Introduction to development builds
-sidebar_title: Introduction
-description: Why use development builds and how to get started.
-searchRank: 98
-searchPosition: 1
-hideTOC: true
-hasVideoLink: true
----
+import React, { useState, useRef, useEffect } from 'react';
+import { StyleSheet, Text, View, PanResponder, Animated, Dimensions, StatusBar, TouchableOpacity } from 'react-native';
 
-import { BookOpen02Icon } from '@expo/styleguide-icons/outline/BookOpen02Icon';
+const { width } = Dimensions.get('window');
+const GRID_SIZE = 8;
+const PADDING = 20;
+const GRID_WIDTH = width - (PADDING * 2);
+const CELL_SIZE = Math.floor(GRID_WIDTH / GRID_SIZE);
 
-import { BoxLink } from '~/ui/components/BoxLink';
-import { Collapsible } from '~/ui/components/Collapsible';
-import { VideoBoxLink } from '~/ui/components/VideoBoxLink';
+const SHAPES = [
+  { id: 0, layout: [[1, 1], [1, 1]], color: '#FF007F' }, 
+  { id: 1, layout: [[1, 1, 1, 1]], color: '#00E5FF' },  
+  { id: 2, layout: [[0, 1, 0], [1, 1, 1]], color: '#7FFF00' }, 
+  { id: 3, layout: [[1, 1], [1, 0]], color: '#FFD700' }, 
+  { id: 4, layout: [[1, 1, 1]], color: '#00E5FF' },     
+];
 
-**Development build** is the term that we use for a "Debug" build of an app that includes the [`expo-dev-client`](/versions/latest/sdk/dev-client/) library. This library augments the built-in React Native development tooling with additional capabilities, such as support for inspecting network requests and a "launcher" UI that lets you switch between different development servers (such as between a server running on your machine or a teammate's machine) and deployments of your app (such as published updates with EAS Update).
+export default function App() {
+  const [gameState, setGameState] = useState('START'); // START, PLAYING, GAMEOVER, TIMEOUT
+  const [grid, setGrid] = useState(Array(GRID_SIZE).fill(0).map(() => Array(GRID_SIZE).fill(0)));
+  const [score, setScore] = useState(0);
+  const [currentShapes, setCurrentShapes] = useState([0, 1, 2]);
+  const [gridLayout, setGridLayout] = useState({ x: 0, y: 0 });
+  const [timer, setTimer] = useState(60);
+  const [activeIdx, setActiveIdx] = useState(null);
 
-<Collapsible summary="Difference between Expo Go and development builds">
+  const pans = [useRef(new Animated.ValueXY()).current, useRef(new Animated.ValueXY()).current, useRef(new Animated.ValueXY()).current];
+  const touchOffset = useRef({ x: 0, y: 0 });
 
-[Expo Go](https://expo.dev/go) is a playground app for students and learners to get started quickly. It comes with a fixed set of native libraries built in, so you can write JavaScript code and see changes instantly without building a native app yourself. A development build is a fully featured development environment for working on your production-grade Expo apps.
+  useEffect(() => {
+    let interval;
+    if (gameState === 'PLAYING' && timer > 0) {
+      interval = setInterval(() => setTimer(prev => Math.max(0, prev - 1)), 1000);
+    } else if (timer <= 0 && gameState === 'PLAYING') {
+      setGameState('TIMEOUT'); // Show TIMEOUT only when clock hits zero
+    }
+    return () => clearInterval(interval);
+  }, [gameState, timer]);
 
-</Collapsible>
+  const checkGameOver = (currentGrid, shapesInRack) => {
+    for (let shapeIdx of shapesInRack) {
+      const shape = SHAPES[shapeIdx];
+      for (let r = 0; r <= GRID_SIZE - shape.layout.length; r++) {
+        for (let c = 0; c <= GRID_SIZE - shape.layout[0].length; c++) {
+          let canFit = true;
+          shape.layout.forEach((sRow, ri) => {
+            sRow.forEach((cell, ci) => {
+              if (cell === 1 && currentGrid[r + ri][c + ci] !== 0) canFit = false;
+            });
+          });
+          if (canFit) return false; 
+        }
+      }
+    }
+    return true; 
+  };
 
-<Collapsible summary="Native app and JavaScript bundle">
+  const createPanResponder = (index) => PanResponder.create({
+    onStartShouldSetPanResponder: () => gameState === 'PLAYING',
+    onPanResponderGrant: (e) => {
+      setActiveIdx(index);
+      touchOffset.current = { x: e.nativeEvent.locationX, y: e.nativeEvent.locationY };
+    },
+    onPanResponderMove: Animated.event([null, { dx: pans[index].x, dy: pans[index].y }], { useNativeDriver: false }),
+    onPanResponderRelease: (e, gesture) => {
+      setActiveIdx(null);
+      const shape = SHAPES[currentShapes[index]];
+      const dropX = gesture.moveX - gridLayout.x - touchOffset.current.x;
+      const dropY = gesture.moveY - gridLayout.y - touchOffset.current.y;
+      const col = Math.round(dropX / CELL_SIZE);
+      const row = Math.round(dropY / CELL_SIZE);
 
-The **native app** is what you install on your device. Expo Go is a pre-built native app that works like a playground &mdash; it can't be changed after you install it. To add new native libraries or change things like your app name and icon, you need to build your own native app (a development build).
+      if (placeShape(index, row, col)) {
+      } else {
+        Animated.spring(pans[index], { toValue: { x: 0, y: 0 }, friction: 5, useNativeDriver: false }).start();
+      }
+    },
+  });
 
-The **JavaScript bundle (`npx expo start`)** is where your app's UI code and business logic are. In production apps, there is one **main.js** bundle that is shipped with the app itself. In development, this JS bundle is live reloaded from your local machine. The main role of React Native is to provide a way for the JavaScript code to access the native APIs (Image, Camera, Notifications, and more). However, only APIs and libraries that were bundled in the **native app** can be used.
+  const placeShape = (shapeIdx, r, c) => {
+    const shape = SHAPES[currentShapes[shapeIdx]];
+    let canPlace = true;
+    shape.layout.forEach((row, ri) => {
+      row.forEach((cell, ci) => {
+        if (cell === 1 && (r + ri < 0 || r + ri >= GRID_SIZE || c + ci < 0 || c + ci >= GRID_SIZE || grid[r + ri][c + ci] !== 0)) {
+          canPlace = false;
+        }
+      });
+    });
 
-</Collapsible>
+    if (canPlace) {
+      let newGrid = grid.map(row => [...row]);
+      shape.layout.forEach((row, ri) => {
+        row.forEach((cell, ci) => { if (cell === 1) newGrid[r + ri][c + ci] = shape.color; });
+      });
+      
+      let rowsToClear = [], colsToClear = [];
+      for (let i = 0; i < GRID_SIZE; i++) {
+        if (newGrid[i].every(cell => cell !== 0)) rowsToClear.push(i);
+        if (newGrid.every(row => row[i] !== 0)) colsToClear.push(i);
+      }
 
-<VideoBoxLink
-  videoId="FdjczjkwQKE"
-  title="Expo Go & Development Builds: which should you use?"
-  description="In this tutorial video Beto explains what each of them is, and when to choose a development build."
-/>
+      const totalCleared = rowsToClear.length + colsToClear.length;
+      rowsToClear.forEach(ri => newGrid[ri] = Array(GRID_SIZE).fill(0));
+      colsToClear.forEach(ci => newGrid.forEach(row => row[ci] = 0));
 
-## Why use a development build (a.k.a what _can't_ you do in Expo Go and why)
+      setGrid(newGrid);
+      setScore(prev => prev + 10 + (totalCleared * 100));
+      if (totalCleared > 0) setTimer(prev => prev + (totalCleared * 7));
 
-Expo Go is a playground for students and learners to understand the basics of React Native. It's limited and not useful for building production-grade projects, so most apps will convert to using development builds. It helps to know exactly what is _impossible_ in Expo Go and _why_, so you can make an informed decision on when and why to make this move.
+      let nextRack = [...currentShapes];
+      nextRack[shapeIdx] = Math.floor(Math.random() * SHAPES.length);
+      setCurrentShapes(nextRack);
+      pans[shapeIdx].setValue({ x: 0, y: 0 });
 
-<Collapsible summary="Use libraries with native code that aren't in Expo Go">
+      if (checkGameOver(newGrid, nextRack)) {
+        setGameState('GAMEOVER'); // Instant freeze when stuck
+      }
+      return true;
+    }
+    return false;
+  };
 
-Consider [`react-native-webview`](/versions/latest/sdk/webview/) as an example, a library that contains native code, but [is included in Expo Go](https://github.com/expo/expo/blob/main/apps/expo-go/package.json#L23). When you run `npx expo install react-native-webview` command in your project, it will install the library in your **node_modules** directory, which includes both the JS code and the native code. But the JS bundle you are building _only_ uses the JS code. Then, your JS bundle gets uploaded to Expo Go, and it interacts with the native code that was already bundled with the app.
+  const restart = () => {
+    setGrid(Array(GRID_SIZE).fill(0).map(() => Array(GRID_SIZE).fill(0)));
+    setScore(0);
+    setTimer(60);
+    setGameState('PLAYING');
+    pans.forEach(p => p.setValue({ x: 0, y: 0 }));
+  };
 
-Instead, when you try to use a library that is not included, for example, [`react-native-firebase`](/guides/using-firebase/#using-react-native-firebase), then you can use the JS code and hot reload the new bundle into Expo Go but it will immediately error because the JS code tries to call the native code from the React Native Firebase package that does not exist in Expo Go. There is no way to get the native code into the Expo Go app unless it was already included in the bundle that was uploaded to the app stores.
+  if (gameState === 'START') {
+    return (
+      <View style={styles.menu}>
+        <Text style={styles.logoMain}>NEON GRID</Text>
+        <Text style={styles.logoSub}>BLAST</Text>
+        <TouchableOpacity style={styles.startBtn} onPress={() => setGameState('PLAYING')}>
+          <Text style={styles.startBtnTxt}>START BLASTIN'</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
-</Collapsible>
+  return (
+    <View style={styles.container}>
+      <StatusBar barStyle="light-content" />
+      <View style={styles.header}>
+        <Text style={styles.scoreText}>{score}</Text>
+        <View style={styles.timerPill}>
+          <Text style={[styles.timerText, { color: timer < 10 ? '#FF007F' : '#00E5FF' }]}>
+            {Math.floor(timer / 60)}:{(timer % 60).toString().padStart(2, '0')}
+          </Text>
+        </View>
+      </View>
+      <View style={styles.board} onLayout={(e) => e.target.measure((x, y, w, h, px, py) => setGridLayout({ x: px, y: py }))}>
+        {grid.map((row, rIdx) => (
+          <View key={rIdx} style={styles.row}>
+            {row.map((cell, cIdx) => <View key={cIdx} style={[styles.cell, { backgroundColor: cell === 0 ? '#1A1A1E' : cell }]} />)}
+          </View>
+        ))}
+        
+        {/* GAME OVER OVERLAY (STUCK) */}
+        {gameState === 'GAMEOVER' && (
+          <View style={styles.overlay}>
+            <Text style={styles.goText}>GAME OVER</Text>
+            <Text style={styles.finalScore}>SCORE: {score}</Text>
+            <TouchableOpacity style={styles.retryBtn} onPress={restart}>
+              <Text style={styles.retryTxt}>RETRY</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
-<Collapsible summary="Test changes in app icon, name, splash screen">
+        {/* TIMEOUT OVERLAY (CLOCK RAN OUT) */}
+        {gameState === 'TIMEOUT' && (
+          <View style={styles.overlay}>
+            <Text style={[styles.goText, { color: '#00E5FF' }]}>TIME OUT</Text>
+            <Text style={styles.finalScore}>SCORE: {score}</Text>
+            <TouchableOpacity style={[styles.retryBtn, { backgroundColor: '#00E5FF' }]} onPress={restart}>
+              <Text style={[styles.retryTxt, { color: '#000' }]}>RETRY</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+      
+      <View style={styles.rack}>
+        {currentShapes.map((id, index) => (
+          <Animated.View key={index} {...createPanResponder(index).panHandlers} style={[styles.dragHandle, pans[index].getLayout(), { zIndex: activeIdx === index ? 99 : 1 }]}>
+            {SHAPES[id].layout.map((row, ri) => (
+              <View key={ri} style={styles.row}>
+                {row.map((cell, ci) => <View key={ci} style={[styles.miniCell, { backgroundColor: cell === 1 ? SHAPES[id].color : 'transparent' }]} />)}
+              </View>
+            ))}
+          </Animated.View>
+        ))}
+      </View>
+    </View>
+  );
+}
 
-If you're developing your app in Expo Go only, you can build a store version that will use your provided values and images; it just won't be possible to test it in Expo Go.
-
-These native assets are shipped with the native bundle and are immutable once the app is installed. The Expo Go app does show a splash screen, which is your app icon on a solid color background. This is a dev-only emulation to view how the splash screen will probably look. However, it is limited, for example, you cannot test `SplashScreen.setOptions` to animate the splash screen.
-
-</Collapsible>
-
-<Collapsible summary="Remote push notifications">
-
-While [in-app notifications](/versions/latest/sdk/notifications/) are available in Expo Go, remote push notifications (that is, sending a push notification from a server to the app) are not. This is because a push notification service should be tied to your own push notification certificates, and while it is possible to make it work in Expo Go, it often causes confusion for production builds. It is recommended to test remote push notifications in development builds so you can ensure parity in behavior between development and production.
-
-</Collapsible>
-
-<Collapsible summary="Implementing App/Universal links">
-
-Both [Android App Links](/linking/android-app-links/) and [iOS Universal Links](/linking/ios-universal-links/) require a two-way association between the native app and the website. In particular, it requires the native app to include the linked website's URL. This is impossible with Expo Go due to the aforementioned native code immutability.
-
-</Collapsible>
-
-<Collapsible summary="Open projects using older SDKs (iOS device only)">
-
-Expo Go can only support one SDK version at a time. When a new SDK version is released, Expo Go is updated to support the newer version, and this will be the only version of Expo Go available to install from the stores.
-
-If you're developing on an Android Device, Android Emulator, or iOS Simulator, a compatible version of Expo Go can be [downloaded and installed](https://expo.dev/go). The only platform where this is impossible is iPhone devices because Apple does not support side-loading older versions of apps.
-
-</Collapsible>
-
-<BoxLink
-  title="Expo Go to development build"
-  description="Learn how to migrate an existing Expo Go project to using development builds."
-  href="/develop/development-builds/expo-go-to-dev-build/"
-  Icon={BookOpen02Icon}
-/>
-
-<BoxLink
-  title="Local app development"
-  description="How to build a development client on your local machine."
-  href="/guides/local-app-development"
-  Icon={BookOpen02Icon}
-/>
-
-<BoxLink
-  title="Development builds on EAS"
-  description="How to build a development client on EAS."
-  href="/develop/development-builds/create-a-build/"
-  Icon={BookOpen02Icon}
-/>
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#050505', alignItems: 'center' },
+  menu: { flex: 1, backgroundColor: '#050505', justifyContent: 'center', alignItems: 'center' },
+  logoMain: { color: '#FFD700', fontSize: 44, fontWeight: '900' },
+  logoSub: { color: '#FFF', fontSize: 60, fontWeight: '900', marginTop: -15 },
+  startBtn: { marginTop: 50, backgroundColor: '#00E5FF', paddingVertical: 20, paddingHorizontal: 60, borderRadius: 50 },
+  startBtnTxt: { color: '#000', fontSize: 22, fontWeight: 'bold' },
+  header: { marginTop: 60, alignItems: 'center' },
+  scoreText: { color: '#FFF', fontSize: 80, fontWeight: '900' },
+  timerPill: { backgroundColor: '#111', paddingHorizontal: 20, paddingVertical: 5, borderRadius: 15 },
+  timerText: { fontSize: 32, fontWeight: 'bold', fontFamily: 'monospace' },
+  board: { marginTop: 20, padding: 6, backgroundColor: '#0D0D0F', borderRadius: 15 },
+  row: { flexDirection: 'row' },
+  cell: { width: CELL_SIZE - 2, height: CELL_SIZE - 2, margin: 1, borderRadius: 5 },
+  overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.92)', justifyContent: 'center', alignItems: 'center', borderRadius: 15, zIndex: 100 },
+  goText: { color: '#FF007F', fontSize: 48, fontWeight: '900', textAlign: 'center' },
+  finalScore: { color: '#FFF', fontSize: 24, marginVertical: 10 },
+  retryBtn: { backgroundColor: '#FF007F', paddingVertical: 15, paddingHorizontal: 50, borderRadius: 30, marginTop: 20 },
+  retryTxt: { color: '#FFF', fontSize: 20, fontWeight: 'bold' },
+  rack: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 40, width: '90%', height: 140, backgroundColor: '#0D0D0F', borderRadius: 30, alignItems: 'center' },
+  dragHandle: { padding: 10 },
+  miniCell: { width: CELL_SIZE / 2.3, height: CELL_SIZE / 2.3, margin: 1, borderRadius: 3 }
+});
